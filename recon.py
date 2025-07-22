@@ -1,4 +1,4 @@
-# recon_menu_tool_with_logs.py
+# recon_tool.py (fixed version)
 import socket
 import whois
 import dns.resolver
@@ -7,59 +7,65 @@ import nmap
 from datetime import datetime
 import sys
 
-# === LOGGING FUNCTION ===
+# === LOGGING ===
 def log_action(action, data=""):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open("session_log.txt", "a") as log_file:
         log_file.write(f"[{now}] ACTION: {action}\n")
         if data:
-            if isinstance(data, (dict, list)):
-                log_file.write(f"{str(data)}\n")
-            else:
-                log_file.write(data + "\n")
+            log_file.write(str(data) + "\n")
         log_file.write("="*60 + "\n")
 
+# === FUNCTIONS ===
 def get_whois(domain):
     try:
         w = whois.whois(domain)
-        log_action("WHOIS Lookup", str(w))
+        log_action("WHOIS", str(w))
         return str(w)
     except Exception as e:
-        log_action("WHOIS Error", str(e))
-        return f"WHOIS Error: {e}"
+        return f"WHOIS error: {e}"
 
 def get_dns_records(domain):
-    records = {}
+    results = {}
     try:
-        for record_type in ['A', 'MX', 'TXT', 'NS']:
+        for record_type in ["A", "MX", "TXT", "NS"]:
             answers = dns.resolver.resolve(domain, record_type)
-            records[record_type] = [r.to_text() for r in answers]
+            results[record_type] = [r.to_text() for r in answers]
     except Exception as e:
-        records['Error'] = str(e)
-    log_action("DNS Records", records)
-    return records
+        results["Error"] = str(e)
+    log_action("DNS Records", results)
+    return results
 
 def get_subdomains_crtsh(domain):
     try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
         url = f"https://crt.sh/?q=%25.{domain}&output=json"
-        res = requests.get(url, timeout=10)
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            raise Exception(f"crt.sh returned {res.status_code}")
         data = res.json()
-        subdomains = list(set(entry['name_value'] for entry in data))
+        subdomains = set()
+        for entry in data:
+            name = entry.get("name_value")
+            if name:
+                for sub in name.split("\n"):
+                    if domain in sub:
+                        subdomains.add(sub.strip())
+        subdomains = sorted(list(subdomains))
         log_action("Subdomain Enumeration", subdomains)
         return subdomains
     except Exception as e:
-        log_action("Subdomain Enum Error", str(e))
         return [f"Subdomain enum error: {e}"]
 
 def scan_ports(domain):
-    nm = nmap.PortScanner()
     try:
+        nm = nmap.PortScanner()
         nm.scan(domain, '1-1000', arguments='-T4 -sS')
-        log_action("Port Scan", nm[domain].tcp())
-        return nm[domain].all_protocols(), nm[domain].tcp()
+        ports = nm[domain].tcp()
+        log_action("Port Scan", ports)
+        return ports
     except Exception as e:
-        log_action("Port Scan Error", str(e))
-        return [f"Port scan error: {e}"]
+        return {"Error": str(e)}
 
 def banner_grab(ip, port):
     try:
@@ -68,32 +74,36 @@ def banner_grab(ip, port):
         s.connect((ip, port))
         banner = s.recv(1024).decode().strip()
         s.close()
-        log_action(f"Banner Grab on {port}", banner)
-        return banner
+        return banner if banner else "No response"
     except:
-        return "No banner"
+        return "Banner grab failed"
 
 def generate_report(domain, data):
     now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"{domain}_recon_{now}.txt"
     with open(filename, "w") as f:
-        f.write(f"Recon Report for {domain}\n")
-        f.write("="*50 + "\n")
-        for key, val in data.items():
-            f.write(f"\n[{key}]\n")
-            if isinstance(val, dict):
-                for k, v in val.items():
+        f.write(f"🔍 Recon Report for: {domain}\n")
+        f.write(f"🕒 Timestamp: {now}\n")
+        f.write("="*60 + "\n\n")
+
+        for section, value in data.items():
+            f.write(f"📘 {section} Results\n")
+            f.write("-" * 50 + "\n")
+            if isinstance(value, dict):
+                for k, v in value.items():
                     f.write(f"{k}: {v}\n")
-            elif isinstance(val, list):
-                for item in val:
+            elif isinstance(value, list):
+                for item in value:
                     f.write(f"- {item}\n")
             else:
-                f.write(str(val) + "\n")
-    log_action("Report Generated", f"Saved as {filename}")
+                f.write(f"{value}\n")
+            f.write("\n")
+    log_action("Report Generated", f"{filename}")
     return filename
 
+# === MENU ===
 def menu():
-    print("\n🛡️  ITSOLERA RECON TOOL - MENU")
+    print("\n🛡️  ITSOLERA RECON TOOL")
     print("="*40)
     print("1. WHOIS Lookup")
     print("2. DNS Records")
@@ -103,51 +113,61 @@ def menu():
     print("6. Exit")
     print("="*40)
 
-# === Main Program ===
+# === MAIN ===
 if __name__ == "__main__":
     result = {}
-    print("🔍 Enter target domain (e.g., example.com):")
+    print("Enter target domain (e.g. example.com):")
     domain = input(">> ").strip()
     log_action("Session Started", f"Target: {domain}")
+
+    resolved_ip = ""
+    try:
+        resolved_ip = socket.gethostbyname(domain)
+    except:
+        print("❌ Could not resolve domain to IP. Port scan may fail.")
 
     while True:
         menu()
         choice = input("Select an option: ").strip()
 
         if choice == "1":
-            print("\n[+] Running WHOIS...")
+            print("[+] WHOIS Lookup...")
             result["WHOIS"] = get_whois(domain)
-            print("[✔] WHOIS completed.")
+            print("[✔] Done.")
 
         elif choice == "2":
-            print("\n[+] Fetching DNS Records...")
+            print("[+] Fetching DNS records...")
             result["DNS"] = get_dns_records(domain)
-            print("[✔] DNS records fetched.")
+            print("[✔] Done.")
 
         elif choice == "3":
-            print("\n[+] Enumerating Subdomains...")
+            print("[+] Enumerating subdomains...")
             result["Subdomains"] = get_subdomains_crtsh(domain)
-            print("[✔] Subdomain enumeration done.")
+            print("[✔] Done.")
 
         elif choice == "4":
-            print("\n[+] Scanning Ports and Grabbing Banners...")
-            protocols, ports = scan_ports(domain)
-            port_data = {}
-            for p in ports:
-                banner = banner_grab(domain, p)
-                port_data[p] = {"state": ports[p]['state'], "banner": banner}
-            result["Ports"] = port_data
-            print("[✔] Port scan complete.")
+            print("[+] Scanning ports...")
+            ports = scan_ports(domain)
+            banners = {}
+            for port in ports:
+                if isinstance(ports[port], dict) and ports[port].get("state") == "open":
+                    banner = banner_grab(resolved_ip, port)
+                    banners[port] = {
+                        "state": ports[port]["state"],
+                        "banner": banner
+                    }
+            result["Ports"] = banners
+            print("[✔] Port scan and banner grabbing done.")
 
         elif choice == "5":
-            print("\n[+] Generating report...")
+            print("[+] Generating report...")
             filename = generate_report(domain, result)
-            print(f"[✔] Report saved to: {filename}")
+            print(f"[✔] Report saved: {filename}")
 
         elif choice == "6":
-            print("Exiting... 🚪")
             log_action("Session Ended")
+            print("Exiting.")
             sys.exit()
 
         else:
-            print("❌ Invalid option. Please try again.")
+            print("❌ Invalid option.")
