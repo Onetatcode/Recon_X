@@ -17,5 +17,6 @@ A beginner-friendly CLI-based reconnaissance tool developed as part of the ITSOL
 Install Python packages:
 
 ```bash
-pip install -r requirementss.txt
+pip install -r requirements.txt
+
 
